@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import {readFileSync} from 'node:fs';
+const words=[{id:'word-a',en:'monomial',vi:'đơn thức',subject:'maths',grade:8},{id:'word-b',en:'polynomial',vi:'đa thức',subject:'maths',grade:8}];
+const main={innerHTML:''},storage=new Map();let micCalls=0,providerCalls=0,verdict='nearly';
+const feedback=()=>({verdict,wordId:'word-a',heard:'monomial',feedback_en:'Practice feedback.',feedback_vi:'Nhận xét luyện tập.',tip_en:'Listen and say it again.',tip_vi:'Nghe mẫu và nói lại.'});
+const samples=Float32Array.from({length:16000},(_,i)=>Math.sin(i*.1)*.1),recording={numberOfChannels:1,length:16000,duration:1,sampleRate:16000,getChannelData:()=>samples};
+const track={label:'Synthetic test input',stop(){}},stream={getTracks:()=>[track],getAudioTracks:()=>[track]};
+const browser=vm.createContext({console,crypto,AbortController,URL,Blob,btoa,Float32Array,ArrayBuffer,DataView,setTimeout,clearTimeout,setInterval:()=>0,clearInterval:()=>{},state:{grade:8},view:'speaking',currentModal:null,IPA:{},gradeWords:()=>words,gradeSubjects:()=>[{id:'maths',name:'Maths',vi:'Toán học'}],lessonById:()=>null,subj:()=>({name:'Maths',vi:'Toán học'}),pageHeading:()=>'',footer:()=>'',esc:x=>String(x).replaceAll('<','&lt;'),icon:()=>'',pronunciationURL:()=>'/audio/test.wav',$:()=>main,window:{LexiAudio:{stop(){},play(){}},addEventListener(){}},document:{addEventListener(){},getElementById:()=>({scrollIntoView(){}}),querySelector:()=>({scrollIntoView(){}})},localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v)},audioSessionPlayback(){},unlockWordAudio:()=>({}),navigator:{mediaDevices:{getUserMedia:async()=>{micCalls++;return stream;},enumerateDevices:async()=>[]}},createVoiceRecorder:async()=>({cancel(){},stop:async()=>recording}),fetch:async(_url,options)=>{providerCalls++;const data=JSON.parse(options.body);assert.equal(data.wordId,'word-a');assert.ok(data.audio);return Response.json(feedback());}});
+vm.runInContext(readFileSync('dist/speaking.js','utf8'),browser);
+vm.runInContext("Object.assign(speakingPractice,{config:{enabled:true},wordId:'word-a'})",browser);
+let html=vm.runInContext('speakingCheckControl()',browser);assert.match(html,/Check/);assert.match(html,/disabled/);assert.match(html,/Record first/);assert.equal(micCalls,0);
+vm.runInContext("Object.assign(speakingPractice,{base64:'first-recording',url:'blob:first-recording',requestId:'first-request-123'})",browser);
+html=vm.runInContext('speakingCheckControl()',browser);assert.ok(!html.includes('disabled'));assert.match(html,/Ready/);
+await vm.runInContext('checkSpeaking()',browser);assert.equal(providerCalls,1);assert.equal(micCalls,0,'Feedback must never reopen the mic automatically');
+assert.match(main.innerHTML,/Almost!/);assert.match(main.innerHTML,/Speak again/);assert.ok(!main.innerHTML.includes('data-action="speaking-next"'));
+vm.runInContext('nextSpeakingWord()',browser);assert.equal(vm.runInContext('speakingPractice.wordId',browser),'word-a','A non-clear result cannot advance through the Next action');
+await vm.runInContext('checkSpeaking()',browser);assert.equal(providerCalls,1,'The same completed recording is not checked repeatedly');
+// Click-to-retry takes a new microphone recording and keeps the target word.
+vm.runInContext('retrySpeaking()',browser);await new Promise(r=>setImmediate(r));
+assert.equal(micCalls,1);assert.equal(vm.runInContext('speakingPractice.wordId',browser),'word-a');assert.equal(vm.runInContext('speakingPractice.result',browser),null);assert.equal(vm.runInContext('speakingPractice.base64',browser),'');
+await vm.runInContext('finishSpeakingRecording()',browser);
+const newId=vm.runInContext('speakingPractice.requestId',browser);assert.ok(newId&&newId!=='first-request-123');assert.ok(vm.runInContext('speakingPractice.base64.length>0',browser));
+verdict='clear';await vm.runInContext('checkSpeaking()',browser);assert.equal(providerCalls,2);assert.match(main.innerHTML,/Correct!/);assert.match(main.innerHTML,/Đúng rồi!/);assert.match(main.innerHTML,/data-action="speaking-next"/);
+vm.runInContext('nextSpeakingWord()',browser);assert.equal(vm.runInContext('speakingPractice.wordId',browser),'word-b');assert.equal(vm.runInContext('speakingPractice.base64',browser),'');assert.equal(vm.runInContext('speakingPractice.result',browser),null);
+for(const value of ['nearly','practice','unclear']){browser.example={...feedback(),verdict:value};const output=vm.runInContext('speakingFeedbackHTML(example)',browser);assert.match(output,/Speak again/);assert.match(output,/data-action="speaking-retry"/);assert.ok(!output.includes('data-action="speaking-next"'));}
+browser.fetch=async()=>Response.json({error:'AI service unavailable'},{status:503});
+vm.runInContext("Object.assign(speakingPractice,{wordId:'word-a',base64:'second-recording',requestId:'failed-request-123'})",browser);await vm.runInContext('checkSpeaking()',browser);
+assert.equal(vm.runInContext('speakingPractice.result',browser),null);assert.ok(vm.runInContext('speakingPractice.error',browser));assert.ok(!main.innerHTML.includes('Correct!'),'An API failure is never presented as a pronunciation verdict');
+assert.equal(JSON.parse(storage.get('lexilab-speaking-v1')).length,2,'Only completed checks enter the local history');
+console.log('PASS: visible Check button and readiness; real verdict-driven outcomes; no automatic mic access; retry keeps the word and creates a new recording/id; Next requires clear; duplicate checks blocked; API errors never marked wrong or correct.');

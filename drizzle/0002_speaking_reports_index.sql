@@ -1,0 +1,1 @@
+CREATE INDEX speaking_checks_student_status_time ON speaking_checks(student_id,status,created_at);
